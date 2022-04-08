@@ -1,5 +1,5 @@
 IDIR=include
-CC=g++
+CC=g++ -std=c++20
 CFLAGS=-I$(IDIR)
 
 ODIR =obj
