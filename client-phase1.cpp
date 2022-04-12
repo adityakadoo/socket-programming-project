@@ -11,13 +11,29 @@
 #include <fstream>
 #include <string.h>
 #include <vector>
+#include <map>
+#include <set>
 #include <utility>
 #include <thread>
 
 #define TRUE 1
 #define FALSE 0
 
-void server_routine(int clt_num, int port, int id, int n)
+std::vector<std::string> split(std::string s, std::string delimiter = ",")
+{
+    size_t pos = 0;
+    std::string token;
+    std::vector<std::string> res;
+    while ((pos = s.find(delimiter)) != std::string::npos)
+    {
+        token = s.substr(0, pos);
+        res.push_back(token);
+        s.erase(0, pos + delimiter.length());
+    }
+    return res;
+}
+
+void server_routine(int clt_num, int port, int id, int n, std::vector<std::string> *replies)
 {
     int OPT = TRUE;
     int master_socket, addrlen, new_socket, valread;
@@ -55,7 +71,8 @@ void server_routine(int clt_num, int port, int id, int n)
 
     addrlen = sizeof(address);
 
-    for (size_t i = 0; i < n; i++)
+    std::set<std::string> s;
+    while (s.size() < n)
     {
         if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
                                  (socklen_t *)&addrlen)) < 0)
@@ -65,11 +82,14 @@ void server_routine(int clt_num, int port, int id, int n)
         }
         valread = recv(new_socket, buffer, 1024, 0);
         buffer[valread] = '\0';
-        std::cout << buffer << "\n";
+        replies->push_back(buffer);
+        // close(new_socket);
+        s.insert(split(buffer)[0]);
+        // std::cout << buffer << " - " << s.size() << "\n";
     }
 }
 
-void client_routine(std::pair<int, int> neighbour, std::string *message)
+void client_routine(int port, std::string *message)
 {
     int sock = 0, valread1;
     struct sockaddr_in peer_addr;
@@ -82,7 +102,7 @@ void client_routine(std::pair<int, int> neighbour, std::string *message)
     }
 
     peer_addr.sin_family = AF_INET;
-    peer_addr.sin_port = htons(neighbour.second);
+    peer_addr.sin_port = htons(port);
 
     if (inet_pton(AF_INET, "127.0.0.1", &peer_addr.sin_addr) <= 0)
     {
@@ -119,9 +139,14 @@ int main(int argc, char *argv[])
     fin >> clt_num >> port >> id;
 
     fin >> connection_n;
-    std::vector<std::pair<int, int>> neighbours(connection_n);
+    std::vector<int> neighbours(connection_n);
+    std::map<int, int> port_map;
     for (size_t i = 0; i < connection_n; i++)
-        fin >> neighbours[i].first >> neighbours[i].second;
+    {
+        int v;
+        fin >> neighbours[i] >> v;
+        port_map[neighbours[i]] = v;
+    }
     std::vector<int> status(connection_n);
     for (size_t i = 0; i < connection_n; i++)
         status[i] = i;
@@ -132,20 +157,33 @@ int main(int argc, char *argv[])
         fin >> files[i];
 
     // setting up sockets
-
+    // sleep(10);
     std::string *message = new std::string();
-    *message = "Connected with " + std::to_string(clt_num) + " with unique-ID " + std::to_string(id) + " on port " + std::to_string(port);
+    *message = std::to_string(id) + "," + std::to_string(clt_num) + ",";
 
-    std::thread *server_thread = new std::thread(server_routine, clt_num, port, id, connection_n);
+    std::vector<std::string> *replies = new std::vector<std::string>();
+
+    std::thread *server_thread = new std::thread(server_routine, clt_num, port, id, connection_n, replies);
 
     std::vector<std::thread *> threads(connection_n);
     for (size_t i = 0; i < connection_n; i++)
     {
-        threads[i] = new std::thread(client_routine, neighbours[i], message);
+        threads[i] = new std::thread(client_routine, port_map[neighbours[i]], message);
     }
 
     for (std::thread *t : threads)
         t->join();
     server_thread->join();
+
+    std::map<int, std::string> id_map;
+    for (std::string reply : *replies)
+    {
+        std::vector<std::string> reply_segments = split(reply);
+        id_map[std::stoi(reply_segments[1])] = reply_segments[0];
+    }
+    for (std::pair<int, int> port_entry : port_map)
+    {
+        std::cout << "Connected with " + std::to_string(port_entry.first) + " with unique-ID " + id_map[port_entry.first] + " on port " + std::to_string(port_entry.second) + "\n";
+    }
     return 0;
 }
