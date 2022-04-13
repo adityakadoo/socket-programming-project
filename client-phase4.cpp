@@ -20,7 +20,7 @@
 
 #define TRUE 1
 #define FALSE 0
-#define MAX_PEERS 10
+#define MAX_PEERS 15
 
 std::vector<std::string> split(std::string s, std::string delimiter = ",")
 {
@@ -152,14 +152,14 @@ void server_routine(int clt_num, int port, int id, int n, std::vector<std::strin
             buffer[valread] = '\0';
             replies->push_back(buffer);
             close(new_socket);
-            std::cout << buffer << "\n";
+            // std::cout << buffer << "\n";
             s.insert(split(buffer)[0]);
         }
         b->hit();
     }
 }
 
-void client_routine(std::pair<int, int> neighbour, std::string *message, barrier *b)
+void client_routine(int port, std::string *message, barrier *b)
 {
     int sock = 0, valread1;
     struct sockaddr_in peer_addr;
@@ -176,16 +176,17 @@ void client_routine(std::pair<int, int> neighbour, std::string *message, barrier
         }
 
         peer_addr.sin_family = AF_INET;
-        peer_addr.sin_port = htons(neighbour.second);
+        peer_addr.sin_port = htons(port);
 
         if (inet_pton(AF_INET, "127.0.0.1", &peer_addr.sin_addr) <= 0)
         {
             printf("\nInvalid address/ Address not supported\n");
             exit(1);
         }
-
-        while (connect(sock, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0)
+        int tries = 0;
+        while (connect(sock, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0 && tries < 5)
         {
+            tries++;
             sleep(1);
         }
         if (send(sock, message->c_str(), message->length(), 0) != message->length())
@@ -206,10 +207,13 @@ int main(int argc, char *argv[])
         std::cout << "Usage : executable argument1-config-file argument2-directory-path\n";
         exit(1);
     }
+    std::string path_to_file = argv[2];
+    system(("ls " + path_to_file + " | sed \'s/ /\\n/g\'").c_str());
+
     std::string path_to_files = argv[2];
-    std::vector<std::string> dir;
+    std::map<std::string, std::string> dir;
     for (const auto &entry : std::filesystem::directory_iterator(path_to_files))
-        dir.push_back(path_to_name(entry.path()));
+        dir[path_to_name(entry.path())] = "";
 
     std::string config_file = argv[1];
     std::ifstream fin(config_file);
@@ -218,9 +222,14 @@ int main(int argc, char *argv[])
     fin >> clt_num >> port >> id;
 
     fin >> connection_n;
-    std::vector<std::pair<int, int>> neighbours(connection_n);
+    std::vector<int> neighbours(connection_n);
+    std::map<int, int> port_map;
     for (size_t i = 0; i < connection_n; i++)
-        fin >> neighbours[i].first >> neighbours[i].second;
+    {
+        int v;
+        fin >> neighbours[i] >> v;
+        port_map[neighbours[i]] = v;
+    }
     std::vector<int> status(connection_n);
     for (size_t i = 0; i < connection_n; i++)
         status[i] = i;
@@ -234,105 +243,185 @@ int main(int argc, char *argv[])
 
     barrier *b = new barrier(connection_n + 1);
 
+    std::map<int, std::string *> message_map;
     std::string *message = new std::string();
-    *message = std::to_string(id) + ",";
-    for (std::string file : dir)
-        *message += std::to_string(id) + "," + file + ",0,";
-    std::vector<std::string> *replies = new std::vector<std::string>();
+    *message = std::to_string(id) + "," + std::to_string(clt_num) + ",";
 
-    std::map<std::string, std::tuple<std::string, std::string, int>> files_info;
-    for (std::string file : dir)
-        files_info[file] = std::make_tuple(std::to_string(id), std::to_string(id), 0);
+    std::vector<std::string> *replies = new std::vector<std::string>();
 
     std::thread *server_thread = new std::thread(server_routine, clt_num, port, id, connection_n, replies, b);
 
     std::vector<std::thread *> threads(connection_n);
     for (size_t i = 0; i < connection_n; i++)
     {
-        threads[i] = new std::thread(client_routine, neighbours[i], message, b);
+        message_map[neighbours[i]] = new std::string(*message);
+        threads[i] = new std::thread(client_routine, port_map[neighbours[i]], message_map[neighbours[i]], b);
     }
-    std::cout << files_info.size() << "\n";
+
     b->hit_main();
-    sleep(2);
+    sleep(10);
     b->release();
     b->hit_main();
-    sleep(2);
+    sleep(10);
+
+    std::map<int, std::string> id_map;
+    std::map<std::string, int> clt_num_map;
+    for (std::string reply : *replies)
+    {
+        std::vector<std::string> reply_segments = split(reply);
+        id_map[std::stoi(reply_segments[1])] = reply_segments[0];
+        clt_num_map[reply_segments[0]] = std::stoi(reply_segments[1]);
+    }
+    for (std::pair<int, int> port_entry : port_map)
+    {
+        std::cout << "Connected with " + std::to_string(port_entry.first) + " with unique-ID " + id_map[port_entry.first] + " on port " + std::to_string(port_entry.second) + "\n";
+    }
+    delete message;
+    message = new std::string();
+    *message = std::to_string(id) + ",";
+    for (std::string file : files)
+    {
+        *message += file + ",";
+    }
+    for (std::pair<int, std::string *> message_entry : message_map)
+    {
+        *message_entry.second = *message;
+    }
+    replies->clear();
+    std::map<std::string, std::tuple<std::string, int>> files_info;
+    std::map<std::string, std::tuple<std::string, std::string>> peer_files_info;
+
+    b->release();
+    b->hit_main();
+    sleep(10);
+
+    delete message;
+    for (std::string reply : *replies)
+    {
+        std::vector<std::string> reply_segments = split(reply);
+        int peer_clt_num = clt_num_map[reply_segments[0]];
+
+        *message_map[peer_clt_num] = std::string(std::to_string(id) + ",");
+        for (size_t i = 1; i < reply_segments.size(); i++)
+            if (dir.find(reply_segments[i]) != dir.end())
+                *message_map[peer_clt_num] += "y,";
+            else
+            {
+                *message_map[peer_clt_num] += "n,";
+                peer_files_info[reply_segments[i]] = std::make_tuple(reply_segments[0], "");
+            }
+    }
+    replies->clear();
+
+    b->release();
+    b->hit_main();
+    sleep(10);
 
     for (std::string reply : *replies)
     {
         std::vector<std::string> reply_segments = split(reply);
-        std::vector<std::string>::iterator it = reply_segments.begin();
-        std::string peer_id = *it;
-        it++;
-        for (; it != reply_segments.end(); it++)
-        {
-            std::string src = *it;
-            it++;
-            std::string filename = *it;
-            it++;
-            int depth = std::stoi(*it) + 1;
+        int peer_clt_num = clt_num_map[reply_segments[0]];
+        *message_map[peer_clt_num] = "";
 
-            if (files_info.find(filename) == files_info.end())
-            {
-                files_info[filename] = std::make_tuple(peer_id, src, depth);
-                *message += src + "," + filename + "," + std::to_string(depth) + ",";
-            }
-        }
+        for (size_t i = 1; i < reply_segments.size(); i++)
+            if (reply_segments[i] == "y")
+                if (files_info.find(files[i - 1]) == files_info.end())
+                    files_info[files[i - 1]] = std::make_tuple(reply_segments[0], 1);
+                else if (std::stoi(std::get<0>(files_info[files[i - 1]])) < std::stoi(reply_segments[0]))
+                    files_info[files[i - 1]] = std::make_tuple(reply_segments[0], 1);
     }
+    message = new std::string();
+    *message = std::to_string(id) + ",";
+    for (std::pair<std::string, std::tuple<std::string, std::string>> file : peer_files_info)
+    {
+        *message += file.first + ",";
+    }
+    for (std::pair<int, std::string *> message_entry : message_map)
+    {
+        *message_entry.second = *message;
+    }
+    replies->clear();
 
-    std::cout << files_info.size() << "\n";
     b->release();
     b->hit_main();
-    sleep(2);
+    sleep(10);
+
+    delete message;
+    for (std::string reply : *replies)
+    {
+        std::vector<std::string> reply_segments = split(reply);
+        int peer_clt_num = clt_num_map[reply_segments[0]];
+
+        *message_map[peer_clt_num] = std::string(std::to_string(id) + ",");
+        for (size_t i = 1; i < reply_segments.size(); i++)
+            if (dir.find(reply_segments[i]) != dir.end())
+                *message_map[peer_clt_num] += "y,";
+            else
+            {
+                *message_map[peer_clt_num] += "n,";
+            }
+    }
+    replies->clear();
+
+    b->release();
+    b->hit_main();
+    sleep(10);
 
     for (std::string reply : *replies)
     {
         std::vector<std::string> reply_segments = split(reply);
-        std::vector<std::string>::iterator it = reply_segments.begin();
-        std::string peer_id = *it;
-        it++;
-        for (; it != reply_segments.end(); it++)
-        {
-            std::string src = *it;
-            it++;
-            std::string filename = *it;
-            it++;
-            int depth = std::stoi(*it) + 1;
+        int peer_clt_num = clt_num_map[reply_segments[0]];
+        *message_map[peer_clt_num] = std::to_string(id) + ",";
 
-            if (files_info.find(filename) == files_info.end())
-            {
-                files_info[filename] = std::make_tuple(peer_id, src, depth);
-                *message += src + "," + filename + "," + std::to_string(depth) + ",";
-            }
+        std::map<std::string, std::tuple<std::string, std::string>>::iterator it = peer_files_info.begin();
+        for (size_t i = 1; i < reply_segments.size(); i++)
+        {
+            if (reply_segments[i] == "y")
+                if (std::get<1>(peer_files_info[it->first]) == "")
+                    std::get<1>(peer_files_info[it->first]) = reply_segments[0];
+                else if (std::stoi(std::get<1>(peer_files_info[it->first])) < std::stoi(reply_segments[0]))
+                    std::get<1>(peer_files_info[it->first]) = reply_segments[0];
+            it++;
         }
     }
+    for (std::pair<std::string, std::tuple<std::string, std::string>> file : peer_files_info)
+    {
+        int peer_clt_num = clt_num_map[std::get<0>(file.second)];
+        if (std::get<1>(file.second) != "")
+            *message_map[peer_clt_num] += file.first + "," + std::get<1>(file.second) + ",";
+    }
+    replies->clear();
+
+    b->release();
+    b->hit_main();
+    sleep(10);
+
+    for (std::string reply : *replies)
+    {
+        std::vector<std::string> reply_segments = split(reply);
+        int peer_clt_num = clt_num_map[reply_segments[0]];
+        *message_map[peer_clt_num] = "";
+
+        for (size_t i = 1; i < reply_segments.size(); i += 2)
+        {
+            if (files_info.find(reply_segments[i]) == files_info.end())
+                files_info[reply_segments[i]] = std::make_tuple(reply_segments[i + 1], 2);
+        }
+    }
+
     b->running = false;
-
-    std::cout << files_info.size() << "\n";
     b->release();
 
     for (std::thread *t : threads)
         t->join();
     server_thread->join();
 
-    for (size_t i = 0; i < file_n; i++)
+    for (std::string file : files)
     {
-        bool found = false;
-        std::string neighbour_id = "100000";
-        int dep = 0;
-        for (std::pair<std::string, std::tuple<std::string, std::string, int>> file_info : files_info)
-        {
-            if (file_info.first == files[i] && std::stoi(std::get<1>(file_info.second)) < std::stoi(neighbour_id))
-            {
-                found = true;
-                neighbour_id = std::get<1>(file_info.second);
-                dep = std::get<2>(file_info.second);
-            }
-        }
-        if (found)
-            std::cout << "Found " << files[i] << " at " << neighbour_id << " with MD5 0 at depth " << dep << "\n";
+        if (files_info.find(file) != files_info.end())
+            std::cout << "Found " << file << " at " << std::get<0>(files_info[file]) << " with MD5 0 at depth " << std::get<1>(files_info[file]) << "\n";
         else
-            std::cout << "Found " << files[i] << " at 0 with MD5 0 at depth 0\n";
+            std::cout << "Found " << file << " at 0 with MD5 0 at depth 0\n";
     }
     return 0;
 }

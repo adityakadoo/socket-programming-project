@@ -33,63 +33,17 @@ std::vector<std::string> split(std::string s, std::string delimiter = ",")
     return res;
 }
 
-void server_routine(int clt_num, int port, int id, int n, std::vector<std::string> *replies)
+void recv_routine(int new_socket, std::vector<std::string> *replies)
 {
-    int OPT = TRUE;
-    int master_socket, addrlen, new_socket, valread;
-    struct sockaddr_in address;
+    int valread;
+    char buffer[1025] = {0};
 
-    char buffer[1025];
-
-    if ((master_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
-    {
-        perror("socket failure");
-        exit(EXIT_FAILURE);
-    }
-
-    if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&OPT, sizeof(OPT)) < 0)
-    {
-        perror("setsockopt failure");
-        exit(EXIT_FAILURE);
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
-
-    if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0)
-    {
-        perror("bind failure");
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(master_socket, 3) < 0)
-    {
-        perror("listen failure");
-        exit(EXIT_FAILURE);
-    }
-
-    addrlen = sizeof(address);
-
-    std::set<std::string> s;
-    while (s.size() < n)
-    {
-        if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
-                                 (socklen_t *)&addrlen)) < 0)
-        {
-            perror("accept failure");
-            exit(EXIT_FAILURE);
-        }
-        valread = recv(new_socket, buffer, 1024, 0);
-        buffer[valread] = '\0';
-        replies->push_back(buffer);
-        // close(new_socket);
-        s.insert(split(buffer)[0]);
-        // std::cout << buffer << " - " << s.size() << "\n";
-    }
+    valread = recv(new_socket, buffer, 1024, 0);
+    buffer[valread] = '\0';
+    replies->push_back(buffer);
 }
 
-void client_routine(int port, std::string *message)
+void send_routine(int port, std::string *message)
 {
     int sock = 0, valread1;
     struct sockaddr_in peer_addr;
@@ -157,23 +111,69 @@ int main(int argc, char *argv[])
         fin >> files[i];
 
     // setting up sockets
-    // sleep(10);
+
     std::string *message = new std::string();
     *message = std::to_string(id) + "," + std::to_string(clt_num) + ",";
 
     std::vector<std::string> *replies = new std::vector<std::string>();
 
-    std::thread *server_thread = new std::thread(server_routine, clt_num, port, id, connection_n, replies);
-
-    std::vector<std::thread *> threads(connection_n);
+    std::vector<std::thread *> send_threads(connection_n);
     for (size_t i = 0; i < connection_n; i++)
     {
-        threads[i] = new std::thread(client_routine, port_map[neighbours[i]], message);
+        send_threads[i] = new std::thread(send_routine, port_map[neighbours[i]], message);
     }
 
-    for (std::thread *t : threads)
+    std::vector<std::thread *> recv_threads(connection_n);
+
+    int OPT = TRUE;
+    int master_socket, addrlen, new_socket;
+    struct sockaddr_in address;
+
+    if ((master_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
+        perror("socket failure");
+        exit(EXIT_FAILURE);
+    }
+
+    if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&OPT, sizeof(OPT)) < 0)
+    {
+        perror("setsockopt failure");
+        exit(EXIT_FAILURE);
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(port);
+
+    if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0)
+    {
+        perror("bind failure");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(master_socket, 3) < 0)
+    {
+        perror("listen failure");
+        exit(EXIT_FAILURE);
+    }
+
+    addrlen = sizeof(address);
+
+    for (size_t i = 0; i < connection_n; i++)
+    {
+        if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
+                                 (socklen_t *)&addrlen)) < 0)
+        {
+            perror("accept failure");
+            exit(EXIT_FAILURE);
+        }
+        recv_threads[i] = new std::thread(recv_routine, new_socket, replies);
+    }
+
+    for (std::thread *t : send_threads)
         t->join();
-    server_thread->join();
+    for (std::thread *t : recv_threads)
+        t->join();
 
     std::map<int, std::string> id_map;
     for (std::string reply : *replies)
