@@ -13,7 +13,7 @@ run:
 	./$(ODIR)/phase$(PHASE).out ../sample-data/client$(CLIENT)-config.txt ../sample-data/files/client$(CLIENT)/
 
 debug:
-	gdb --args $(ODIR)/phase.out ../sample-data/client$(CLIENT)-config.txt ../sample-data/files/client$(CLIENT)/
+	gdb -q --args $(ODIR)/phase.out ../sample-data/client$(CLIENT)-config.txt ../sample-data/files/client$(CLIENT)/
 
 .PHONY: clean
 

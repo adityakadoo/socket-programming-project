@@ -53,6 +53,7 @@ class barrier
     int reached_count;
     int max_count;
     std::counting_semaphore<1> *count_protector;
+    std::counting_semaphore<1> *print_protector;
     std::counting_semaphore<MAX_PEERS> *barrier_semaphore;
     std::counting_semaphore<1> *main_barrier;
 
@@ -63,6 +64,7 @@ public:
         reached_count = 0;
         max_count = max;
         count_protector = new std::counting_semaphore<1>(1);
+        print_protector = new std::counting_semaphore<1>(1);
         barrier_semaphore = new std::counting_semaphore<MAX_PEERS>(0);
         main_barrier = new std::counting_semaphore<1>(0);
         running = true;
@@ -96,106 +98,138 @@ public:
     {
         barrier_semaphore->release(max_count);
     }
+    void get_print()
+    {
+        print_protector->acquire();
+    }
+    void release_print()
+    {
+        print_protector->release();
+    }
 };
 
-void server_routine(int clt_num, int port, int id, int n, std::vector<std::string> *replies, barrier *b)
+void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
 {
-    int OPT = TRUE;
-    int master_socket, addrlen, new_socket, valread;
-    struct sockaddr_in address;
+    int valread;
+    int conv = 0;
+    std::string m;
+    std::vector<std::string> r;
 
     char buffer[1025];
 
-    if ((master_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
-    {
-        perror("socket failure");
-        exit(EXIT_FAILURE);
-    }
-
-    if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&OPT, sizeof(OPT)) < 0)
-    {
-        perror("setsockopt failure");
-        exit(EXIT_FAILURE);
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
-
-    if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0)
-    {
-        perror("bind failure");
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(master_socket, 3) < 0)
-    {
-        perror("listen failure");
-        exit(EXIT_FAILURE);
-    }
-
-    addrlen = sizeof(address);
-
     b->hit();
     while (b->running)
     {
-        std::set<std::string> s;
-        while (s.size() != n)
+        while (true)
         {
-            if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
-                                     (socklen_t *)&addrlen)) < 0)
-            {
-                perror("accept failure");
-                exit(EXIT_FAILURE);
-            }
             valread = recv(new_socket, buffer, 1024, 0);
             buffer[valread] = '\0';
-            replies->push_back(buffer);
-            close(new_socket);
-            // std::cout << buffer << "\n";
-            s.insert(split(buffer)[0]);
+            r = split(buffer, ";");
+            // std::cout << valread << "," << buffer << "\n";
+            if (valread == 0)
+            {
+                m = std::to_string(-1) + ";" + std::to_string(new_socket) + ";";
+                send(new_socket, m.c_str(), m.length(), 0);
+                break;
+            }
+
+            std::string src = split(r[1])[0];
+
+            m = std::to_string(conv) + ";" + std::to_string(new_socket) + ";";
+            send(new_socket, m.c_str(), m.length(), 0);
+
+            if (std::stoi(r[0]) == conv)
+            {
+                replies->push_back(r[1]);
+                // b->get_print();
+                // std::cout << buffer << " -> kept\n"
+                //           << std::flush;
+                // b->release_print();
+                break;
+            }
+            else
+            {
+                // b->get_print();
+                // std::cout << buffer << " -> discarded\n"
+                //           << std::flush;
+                // b->release_print();
+                sleep(2);
+            }
         }
         b->hit();
+        conv++;
     }
+    // close(new_socket);
+    sleep(10);
 }
 
-void client_routine(int port, std::string *message, barrier *b)
+void send_routine(int port, std::string *message, barrier *b)
 {
-    int sock = 0, valread1;
+    int sock = 0, valread;
     struct sockaddr_in peer_addr;
     char buffer[1024] = {0};
 
+    int conv = 0;
+    std::string m;
+    std::vector<std::string> r;
+
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+        printf("socket failure");
+        exit(1);
+    }
+
+    peer_addr.sin_family = AF_INET;
+    peer_addr.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, "127.0.0.1", &peer_addr.sin_addr) <= 0)
+    {
+        printf("\nInvalid address/ Address not supported\n");
+        exit(1);
+    }
+    while (connect(sock, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0)
+    {
+        // b->get_print();
+        // std::cout << "connecting to " << port << "\r" << std::flush;
+        // b->release_print();
+        sleep(1);
+    }
+
     b->hit();
     while (b->running)
     {
+        while (true)
+        {
+            m = std::to_string(conv) + ";" + *message + ";";
 
-        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-        {
-            printf("socket failure");
-            exit(1);
-        }
+            if (send(sock, m.c_str(), m.length(), 0) != m.length())
+            {
+                perror("send failure");
+            }
+            valread = recv(sock, buffer, 1024, 0);
+            buffer[valread] = '\0';
+            // std::cout << buffer << "\n";
+            r = split(buffer, ";");
 
-        peer_addr.sin_family = AF_INET;
-        peer_addr.sin_port = htons(port);
-
-        if (inet_pton(AF_INET, "127.0.0.1", &peer_addr.sin_addr) <= 0)
-        {
-            printf("\nInvalid address/ Address not supported\n");
-            exit(1);
+            if (std::stoi(r[0]) == conv)
+            {
+                // b->get_print();
+                // std::cout << conv << " accpected at " << r[1] << "\n"
+                //           << std::flush;
+                // b->release_print();
+                break;
+            }
+            // b->get_print();
+            // std::cout << conv << " rejected at " << r[1] << "\n"
+            //           << std::flush;
+            // b->release_print();
+            // sleep(5);
         }
-        int tries = 0;
-        while (connect(sock, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0 && tries < 5)
-        {
-            tries++;
-            sleep(1);
-        }
-        if (send(sock, message->c_str(), message->length(), 0) != message->length())
-        {
-            perror("send failure");
-        }
-        close(sock);
         b->hit();
+        conv++;
     }
+    // close(sock);
+    sleep(10);
 }
 
 int main(int argc, char *argv[])
@@ -208,7 +242,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
     std::string path_to_file = argv[2];
-    system(("ls " + path_to_file + " | sed \'s/ /\\n/g\'").c_str());
+    system(("ls -p " + path_to_file + " | grep -v '/$' | sed \'s/ /\\n/g\'").c_str());
 
     std::string path_to_files = argv[2];
     std::map<std::string, std::string> dir;
@@ -241,7 +275,7 @@ int main(int argc, char *argv[])
 
     // setting up sockets
 
-    barrier *b = new barrier(connection_n + 1);
+    barrier *b = new barrier(connection_n * 2);
 
     std::map<int, std::string *> message_map;
     std::string *message = new std::string();
@@ -249,20 +283,67 @@ int main(int argc, char *argv[])
 
     std::vector<std::string> *replies = new std::vector<std::string>();
 
-    std::thread *server_thread = new std::thread(server_routine, clt_num, port, id, connection_n, replies, b);
-
-    std::vector<std::thread *> threads(connection_n);
+    std::vector<std::thread *> send_threads(connection_n);
     for (size_t i = 0; i < connection_n; i++)
     {
         message_map[neighbours[i]] = new std::string(*message);
-        threads[i] = new std::thread(client_routine, port_map[neighbours[i]], message_map[neighbours[i]], b);
+        send_threads[i] = new std::thread(send_routine, port_map[neighbours[i]], message_map[neighbours[i]], b);
+    }
+
+    std::vector<std::thread *> recv_threads(connection_n);
+
+    int OPT = TRUE;
+    int master_socket, addrlen, new_socket;
+    struct sockaddr_in address;
+
+    if ((master_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
+        perror("socket failure");
+        exit(EXIT_FAILURE);
+    }
+
+    if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&OPT, sizeof(OPT)) < 0)
+    {
+        perror("setsockopt failure");
+        exit(EXIT_FAILURE);
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(port);
+
+    if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0)
+    {
+        perror("bind failure");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(master_socket, 3) < 0)
+    {
+        perror("listen failure");
+        exit(EXIT_FAILURE);
+    }
+
+    addrlen = sizeof(address);
+
+    for (size_t i = 0; i < connection_n; i++)
+    {
+        if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
+                                 (socklen_t *)&addrlen)) < 0)
+        {
+            perror("accept failure");
+            exit(EXIT_FAILURE);
+        }
+        recv_threads[i] = new std::thread(recv_routine, new_socket, replies, b);
     }
 
     b->hit_main();
-    sleep(10);
+    // std::cout << "===================" << time(0) << "\n";
+    sleep(2);
     b->release();
     b->hit_main();
-    sleep(10);
+    // std::cout << "===================" << time(0) << "\n";
+    sleep(2);
 
     std::map<int, std::string> id_map;
     std::map<std::string, int> clt_num_map;
@@ -293,7 +374,8 @@ int main(int argc, char *argv[])
 
     b->release();
     b->hit_main();
-    sleep(10);
+    // std::cout << "===================" << time(0) << "\n";
+    sleep(2);
 
     delete message;
     for (std::string reply : *replies)
@@ -315,7 +397,8 @@ int main(int argc, char *argv[])
 
     b->release();
     b->hit_main();
-    sleep(10);
+    // std::cout << "===================" << time(0) << "\n";
+    sleep(2);
 
     for (std::string reply : *replies)
     {
@@ -344,7 +427,8 @@ int main(int argc, char *argv[])
 
     b->release();
     b->hit_main();
-    sleep(10);
+    // std::cout << "===================" << time(0) << "\n";
+    sleep(2);
 
     delete message;
     for (std::string reply : *replies)
@@ -365,7 +449,8 @@ int main(int argc, char *argv[])
 
     b->release();
     b->hit_main();
-    sleep(10);
+    // std::cout << "===================" << time(0) << "\n";
+    sleep(2);
 
     for (std::string reply : *replies)
     {
@@ -394,7 +479,8 @@ int main(int argc, char *argv[])
 
     b->release();
     b->hit_main();
-    sleep(10);
+    // std::cout << "===================" << time(0) << "\n";
+    sleep(2);
 
     for (std::string reply : *replies)
     {
@@ -412,9 +498,10 @@ int main(int argc, char *argv[])
     b->running = false;
     b->release();
 
-    for (std::thread *t : threads)
+    for (std::thread *t : send_threads)
         t->join();
-    server_thread->join();
+    for (std::thread *t : recv_threads)
+        t->join();
 
     for (std::string file : files)
     {

@@ -19,11 +19,17 @@
 #include <csignal>
 #include <streambuf>
 #include <sys/sendfile.h>
-
+// #include <sys/types.h>
+// #include <sys/stat.h>
+// #include <sys/mman.h>
+// #include <fcntl.h>
+// #include <openssl/md5.h>
 
 #define TRUE 1
 #define FALSE 0
 #define MAX_PEERS 15
+
+std::string path_to_files;
 
 std::vector<std::string> split(std::string s, std::string delimiter = ",")
 {
@@ -39,6 +45,21 @@ std::vector<std::string> split(std::string s, std::string delimiter = ",")
     return res;
 }
 
+std::vector<std::string> split_once(std::string s, std::string delimiter = ",")
+{
+    size_t pos = 0;
+    std::string token;
+    std::vector<std::string> res;
+    if ((pos = s.find(delimiter)) != std::string::npos)
+    {
+        token = s.substr(0, pos);
+        res.push_back(token);
+        s.erase(0, pos + delimiter.length());
+    }
+    res.push_back(s);
+    return res;
+}
+
 std::string path_to_name(std::string path)
 {
     size_t pos = 0;
@@ -51,26 +72,48 @@ std::string path_to_name(std::string path)
     return path;
 }
 
+std::string get_exec(const char *cmd)
+{
+    char buffer[128];
+    std::string result = "";
+    FILE *pipe = popen(cmd, "r");
+    if (!pipe)
+        throw std::runtime_error("popen() failed!");
+    try
+    {
+        while (fgets(buffer, sizeof buffer, pipe) != NULL)
+        {
+            result += buffer;
+        }
+    }
+    catch (...)
+    {
+        pclose(pipe);
+        throw;
+    }
+    pclose(pipe);
+    return result;
+}
 
+int client_fd(std::string dir, std::string path_to_send)
+{ // probably need to make the client_routine return the socket to use it here
 
-int client_fd(std::string dir,std::string path_to_send){ //probably need to make the client_routine return the socket to use it here
+    // std::vector<const char*> dir_char;
 
-    //std::vector<const char*> dir_char;
+    std::string file_path = path_to_send + dir;
+    FILE *fp;
+    fp = fopen(file_path.c_str(), "r");
 
-    std::string file_path = dir + path_to_send;
-    FILE* fp;
-    fp = fopen(file_path.c_str(),"r");
-    
-    if(fp == NULL){
-        std::cout<<"Error in reading the file"<<std::endl;
+    if (fp == NULL)
+    {
+        std::cout << "Error in reading the file" << std::endl;
     }
 
     int fileds = fileno(fp);
 
-        //send_file(fp,sock);
+    // send_file(fp,sock);
 
     return fileds;
-    
 }
 
 class barrier
@@ -150,7 +193,7 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
             valread = recv(new_socket, buffer, 1024, 0);
             buffer[valread] = '\0';
             r = split(buffer, ";");
-            std::cout << valread << "," << buffer << "\n";
+            // std::cout << valread << "," << buffer << "\n";
             if (valread == 0)
             {
                 m = std::to_string(-1) + ";" + std::to_string(new_socket) + ";";
@@ -185,39 +228,59 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
         conv++;
     }
 
+    sleep(1);
     valread = recv(new_socket, buffer, 1024, 0);
     buffer[valread] = '\0';
-    int file_size = std::stoi(buffer);
+    int nfiles = std::stoi(std::string(buffer));
 
     m = "ACK";
     send(new_socket, m.c_str(), m.length(), 0);
+    sleep(1);
 
-    valread = recv(new_socket, buffer, 1024, 0);
-    buffer[valread] = '\0';
-    std::string file_name = buffer;
-
-    m = "ACK";
-    send(new_socket, m.c_str(), m.length(), 0);
-
-    int rec_bytes = 0;
-
-    std::string temp = "";
-
-    while(rec_bytes < file_size){
-
+    for (size_t i = 0; i < nfiles; i++)
+    {
+        sleep(1);
         valread = recv(new_socket, buffer, 1024, 0);
         buffer[valread] = '\0';
+        r = split(buffer);
+        // b->get_print();
+        // std::cout << valread << "," << r[0] << "," << r[0] << "," << r.size() << "\n"
+        //           << std::flush;
+        // b->release_print();
+        int file_size = std::stoi(r[0]);
 
-        temp += std::string(buffer);
-        rec_bytes += valread;
+        std::string file_name = r[1];
 
+        m = "ACK";
+        send(new_socket, m.c_str(), m.length(), 0);
+
+        int rec_bytes = 0;
+
+        std::string path = path_to_files + "Downloaded/" + file_name;
+        std::ofstream down_file(path);
+
+        while (rec_bytes < file_size)
+        {
+            valread = recv(new_socket, buffer, 1024, 0);
+            // std::cout << "reading" << valread << "\n";
+            buffer[valread] = '\0';
+
+            rec_bytes += valread;
+            down_file.write(buffer, valread);
+
+            // b->get_print();
+            // std::cout << rec_bytes << "/" << file_size << "          \n" << std::flush;
+            // b->release_print();
+        }
+
+        down_file.close();
+
+        // replies->push_back(file_name + "," + temp);
     }
-
-    replies->push_back(file_name + "," + temp);
-
-
     // close(new_socket);
     sleep(10);
+    // std::cout << "recv-bye\n"
+    //           << std::flush;
 }
 
 void send_routine(int port, std::string *message, barrier *b)
@@ -232,7 +295,9 @@ void send_routine(int port, std::string *message, barrier *b)
 
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
     {
+        // b->get_print();
         printf("socket failure");
+        // b->release_print();
         exit(1);
     }
 
@@ -284,23 +349,46 @@ void send_routine(int port, std::string *message, barrier *b)
         }
         b->hit();
         conv++;
-
     }
 
     std::vector<std::string> file_desc = split(*message);
-    for(size_t i = 0;i < file_desc.size();i = i+3){
-        send(sock, file_desc[i+1].c_str(), file_desc[i+1].length(), 0);
-        valread = recv(sock, buffer, 1024, 0);
-        buffer[valread] = '\0';
-        send(sock, file_desc[i+2].c_str(), file_desc[i+2].length(), 0);
-        valread = recv(sock, buffer, 1024, 0);
-        buffer[valread] = '\0';
-        sendfile(sock,std::stoi(file_desc[i]),NULL,std::stoi(file_desc[i+1]));
-    }
+    int nfiles = file_desc.size() / 3;
+    m = std::to_string(nfiles);
+    send(sock, m.c_str(), m.length(), 0);
+    sleep(1);
+    valread = recv(sock, buffer, 1024, 0);
+    buffer[valread] = '\0';
 
+    // b->get_print();
+    // std::cout << "\n"
+    //           << *message << " + " << file_desc.size() << "\n"
+    //           << std::flush;
+    // b->release_print();
+    for (size_t i = 0; i < file_desc.size(); i = i + 3)
+    {
+        m = file_desc[i + 1] + "," + file_desc[i + 2] + ",";
+        send(sock, m.c_str(), m.length(), 0);
+        sleep(1);
+        valread = recv(sock, buffer, 1024, 0);
+        buffer[valread] = '\0';
+        // b->get_print();
+        // std::cout << valread << "," << buffer << "\n"
+        //           << std::flush;
+        // b->release_print();
+
+        int file_size = std::stoi(file_desc[i + 1]);
+        int sen_bytes = 0;
+        while (sen_bytes < file_size)
+        {
+            int sent = sendfile(sock, std::stoi(file_desc[i]), (off_t *)&sen_bytes, std::stoi(file_desc[i + 1]));
+            sen_bytes += sent;
+        }
+    }
 
     // close(sock);
     sleep(10);
+    // std::cout << "send-bye\n"
+    //           << std::flush;
 }
 
 int main(int argc, char *argv[])
@@ -309,15 +397,14 @@ int main(int argc, char *argv[])
 
     if (argc < 3)
     {
-        std::cout << "Usage : executable argument1-config-file argument2-directory-path\n";
+        std::cout << "Usage : get_executable argument1-config-file argument2-directory-path\n";
         exit(1);
     }
 
     // signal(SIGPIPE, SIG_IGN);
-    std::string path_to_file = argv[2];
-    system(("ls " + path_to_file + " | sed \'s/ /\\n/g\'").c_str());
+    path_to_files = argv[2];
+    system(("ls -p " + path_to_files + " | grep -v '/$' | sed \'s/ /\\n/g\'").c_str());
 
-    std::string path_to_files = argv[2];
     std::map<std::string, std::string> dir;
     for (const auto &entry : std::filesystem::directory_iterator(path_to_files))
         dir[path_to_name(entry.path())] = "";
@@ -350,8 +437,8 @@ int main(int argc, char *argv[])
 
     std::string clt_num_str = std::to_string(clt_num);
 
-    //std::string path_to_down = "../sample-data/files/client" + clt_num_str + "/Downloaded/";
-    //std::string path_to_send = "../sample-data/files/client" + clt_num_str;
+    // std::string path_to_down = "../sample-data/files/client" + clt_num_str + "/Downloaded/";
+    // std::string path_to_send = "../sample-data/files/client" + clt_num_str;
 
     barrier *b = new barrier(connection_n * 2);
 
@@ -478,7 +565,7 @@ int main(int argc, char *argv[])
     {
         std::vector<std::string> reply_segments = split(reply);
         int peer_clt_num = clt_num_map[reply_segments[0]];
-        *message_map[peer_clt_num] = reply_segments[0] + ",";
+        *message_map[peer_clt_num] = std::string(std::to_string(id) + ",");
 
         for (size_t i = 1; i < reply_segments.size(); i++)
             if (reply_segments[i] == "y")
@@ -490,9 +577,10 @@ int main(int argc, char *argv[])
 
     replies->clear();
 
-    for(std::pair<std::string,std::string> files : files_info){
+    for (std::pair<std::string, std::string> files : files_info)
+    {
         int peer_clt_num = clt_num_map[files.second];
-        *message_map[peer_clt_num] += files.first + ","; 
+        *message_map[peer_clt_num] += files.first + ",";
     }
 
     b->release();
@@ -500,28 +588,26 @@ int main(int argc, char *argv[])
     // std::cout << "==============================\n";
     sleep(2);
 
-
     for (std::string reply : *replies)
     {
         std::vector<std::string> reply_segments = split(reply);
         int peer_clt_num = clt_num_map[reply_segments[0]];
-        
+
         *message_map[peer_clt_num] = "";
-        for(size_t i = 1;i<reply_segments.size();i++){
+        for (size_t i = 1; i < reply_segments.size(); i++)
+        {
             std::string file_path = path_to_files + reply_segments[i];
             std::filesystem::path p{file_path};
-            *message_map[peer_clt_num] += client_fd(reply_segments[i],path_to_files) + "," + std::to_string((int)std::filesystem::file_size(p)) + "," + reply_segments[i] + ",";
+            // std::cout << client_fd(reply_segments[i], path_to_files) << "\n"
+            //           << std::flush;
+            *message_map[peer_clt_num] += std::to_string(client_fd(reply_segments[i], path_to_files)) + "," + std::to_string((int)std::filesystem::file_size(p)) + "," + reply_segments[i] + ",";
         }
-
-
     }
-
 
     replies->clear();
 
     b->running = false;
     b->release();
-
 
     //*message = client_fsend(file,,path_to_send);
 
@@ -530,24 +616,34 @@ int main(int argc, char *argv[])
     for (std::thread *t : recv_threads)
         t->join();
 
-    for(std::string reply : *replies){
-        std::vector<std::string> reply_fields = split(reply);
-        std::string path = path_to_files + "Downloaded/" + reply_fields[0];
-
-        std::ofstream down_file(path);
-        down_file << reply_fields[1];
-        down_file.close();
-
-    }
+    // for (std::string reply : *replies)
+    // {
+    //     std::vector<std::string> reply_fields = split_once(reply);
+    // }
 
     for (std::string file : files)
     {
         if (files_info.find(file) != files_info.end())
-            std::cout << "Found " << file << " at " << files_info[file] << " with MD5 0 at depth 1\n";
+        {
+            // int file_descript;
+            // unsigned long file_size;
+            // char *file_buffer;
+
+            // file_descript = client_fd(file, path_to_files + "Downloaded/");
+
+            std::string file_path = path_to_files + "Downloaded/" + file;
+            // std::filesystem::path p{file_path};
+            // file_size = std::filesystem::file_size(p);
+            // std::string hash;
+            std::string hash = split_once(get_exec(("md5sum " + file_path + " | grep -o \"^[0-9a-f]*\"").c_str()),"\n")[0];
+            // file_buffer = (char *)mmap(0, file_size, PROT_READ, MAP_SHARED, file_descript, 0);
+            // MD5((unsigned char *)file_buffer, file_size, (unsigned char *)hash.c_str());
+            // munmap(file_buffer, file_size);
+
+            std::cout << "Found " << file << " at " << files_info[file] << " with MD5 " << hash << " at depth 1\n";
+        }
         else
             std::cout << "Found " << file << " at 0 with MD5 0 at depth 0\n";
     }
     return 0;
-
-    
 }
