@@ -19,11 +19,6 @@
 #include <csignal>
 #include <streambuf>
 #include <sys/sendfile.h>
-// #include <sys/types.h>
-// #include <sys/stat.h>
-// #include <sys/mman.h>
-// #include <fcntl.h>
-// #include <openssl/md5.h>
 
 #define TRUE 1
 #define FALSE 0
@@ -193,7 +188,9 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
             valread = recv(new_socket, buffer, 1024, 0);
             buffer[valread] = '\0';
             r = split(buffer, ";");
+            // b->get_print();
             // std::cout << valread << "," << buffer << "\n";
+            // b->release_print();
             if (valread == 0)
             {
                 m = std::to_string(-1) + ";" + std::to_string(new_socket) + ";";
@@ -232,6 +229,10 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
     valread = recv(new_socket, buffer, 1024, 0);
     buffer[valread] = '\0';
     int nfiles = std::stoi(std::string(buffer));
+    // b->get_print();
+    // std::cout << "nfiles : " << nfiles << "\n"
+    //           << std::flush;
+    // b->release_print();
 
     m = "ACK";
     send(new_socket, m.c_str(), m.length(), 0);
@@ -244,7 +245,7 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
         buffer[valread] = '\0';
         r = split(buffer);
         // b->get_print();
-        // std::cout << valread << "," << r[0] << "," << r[0] << "," << r.size() << "\n"
+        // std::cout << valread << "," << r[0] << "," << r[1] << "," << r.size() << "\n"
         //           << std::flush;
         // b->release_print();
         int file_size = std::stoi(r[0]);
@@ -275,10 +276,13 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
 
         down_file.close();
 
+        m = "ACK";
+        send(new_socket, m.c_str(), m.length(), 0);
+
         // replies->push_back(file_name + "," + temp);
     }
     // close(new_socket);
-    sleep(10);
+    sleep(5);
     // std::cout << "recv-bye\n"
     //           << std::flush;
 }
@@ -383,10 +387,13 @@ void send_routine(int port, std::string *message, barrier *b)
             int sent = sendfile(sock, std::stoi(file_desc[i]), (off_t *)&sen_bytes, std::stoi(file_desc[i + 1]));
             sen_bytes += sent;
         }
+        sleep(1);
+        valread = recv(sock, buffer, 1024, 0);
+        buffer[valread] = '\0';
     }
 
     // close(sock);
-    sleep(10);
+    sleep(5);
     // std::cout << "send-bye\n"
     //           << std::flush;
 }
@@ -635,7 +642,7 @@ int main(int argc, char *argv[])
             // std::filesystem::path p{file_path};
             // file_size = std::filesystem::file_size(p);
             // std::string hash;
-            std::string hash = split_once(get_exec(("md5sum " + file_path + " | grep -o \"^[0-9a-f]*\"").c_str()),"\n")[0];
+            std::string hash = split_once(get_exec(("md5sum " + file_path + " | grep -o \"^[0-9a-f]*\"").c_str()), "\n")[0];
             // file_buffer = (char *)mmap(0, file_size, PROT_READ, MAP_SHARED, file_descript, 0);
             // MD5((unsigned char *)file_buffer, file_size, (unsigned char *)hash.c_str());
             // munmap(file_buffer, file_size);
