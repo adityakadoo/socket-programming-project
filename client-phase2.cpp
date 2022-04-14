@@ -125,7 +125,7 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
             valread = recv(new_socket, buffer, 1024, 0);
             buffer[valread] = '\0';
             r = split(buffer, ";");
-            // std::cout << valread << "," << buffer << "\n";
+            std::cout << valread << "," << buffer << "\n";
             if (valread == 0)
             {
                 m = std::to_string(-1) + ";" + std::to_string(new_socket) + ";";
@@ -160,7 +160,7 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
         conv++;
     }
     // close(new_socket);
-    sleep(10);
+    sleep(5);
 }
 
 void send_routine(int port, std::string *message, barrier *b)
@@ -229,7 +229,7 @@ void send_routine(int port, std::string *message, barrier *b)
         conv++;
     }
     // close(sock);
-    sleep(10);
+    sleep(5);
 }
 
 int main(int argc, char *argv[])
@@ -243,13 +243,14 @@ int main(int argc, char *argv[])
     }
 
     // signal(SIGPIPE, SIG_IGN);
-    std::string path_to_file = argv[2];
-    system(("ls " + path_to_file + " | sed \'s/ /\\n/g\'").c_str());
-
     std::string path_to_files = argv[2];
+
     std::map<std::string, std::string> dir;
     for (const auto &entry : std::filesystem::directory_iterator(path_to_files))
-        dir[path_to_name(entry.path())] = "";
+        if (path_to_name(entry.path()) != "Downloaded")
+            dir[path_to_name(entry.path())] = "";
+    for (std::pair<std::string, std::string> file : dir)
+        std::cout << file.first << std::endl;
 
     std::string config_file = argv[1];
     std::ifstream fin(config_file);
@@ -277,155 +278,160 @@ int main(int argc, char *argv[])
 
     // setting up sockets
 
-    barrier *b = new barrier(connection_n * 2);
-
-    std::map<int, std::string *> message_map;
-    std::string *message = new std::string();
-    *message = std::to_string(id) + "," + std::to_string(clt_num) + ",";
-
-    std::vector<std::string> *replies = new std::vector<std::string>();
-
-    std::vector<std::thread *> send_threads(connection_n);
-    for (size_t i = 0; i < connection_n; i++)
+    std::map<std::string, std::string> files_info;
+    if (connection_n != 0)
     {
-        message_map[neighbours[i]] = new std::string(*message);
-        send_threads[i] = new std::thread(send_routine, port_map[neighbours[i]], message_map[neighbours[i]], b);
-    }
+        barrier *b = new barrier(connection_n * 2);
 
-    std::vector<std::thread *> recv_threads(connection_n);
+        std::map<int, std::string *> message_map;
+        std::string *message = new std::string();
+        *message = std::to_string(id) + "," + std::to_string(clt_num) + ",";
 
-    int OPT = TRUE;
-    int master_socket, addrlen, new_socket;
-    struct sockaddr_in address;
+        std::vector<std::string> *replies = new std::vector<std::string>();
 
-    if ((master_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
-    {
-        perror("socket failure");
-        exit(EXIT_FAILURE);
-    }
-
-    if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&OPT, sizeof(OPT)) < 0)
-    {
-        perror("setsockopt failure");
-        exit(EXIT_FAILURE);
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
-
-    if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0)
-    {
-        perror("bind failure");
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(master_socket, 3) < 0)
-    {
-        perror("listen failure");
-        exit(EXIT_FAILURE);
-    }
-
-    addrlen = sizeof(address);
-
-    for (size_t i = 0; i < connection_n; i++)
-    {
-        if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
-                                 (socklen_t *)&addrlen)) < 0)
+        std::vector<std::thread *> send_threads(connection_n);
+        for (size_t i = 0; i < connection_n; i++)
         {
-            perror("accept failure");
+            message_map[neighbours[i]] = new std::string(*message);
+            send_threads[i] = new std::thread(send_routine, port_map[neighbours[i]], message_map[neighbours[i]], b);
+        }
+
+        std::vector<std::thread *> recv_threads(connection_n);
+
+        int OPT = TRUE;
+        int master_socket, addrlen, new_socket;
+        struct sockaddr_in address;
+
+        if ((master_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+        {
+            perror("socket failure");
             exit(EXIT_FAILURE);
         }
-        recv_threads[i] = new std::thread(recv_routine, new_socket, replies, b);
+
+        if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&OPT, sizeof(OPT)) < 0)
+        {
+            perror("setsockopt failure");
+            exit(EXIT_FAILURE);
+        }
+
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = INADDR_ANY;
+        address.sin_port = htons(port);
+
+        if (bind(master_socket, (struct sockaddr *)&address, sizeof(address)) < 0)
+        {
+            perror("bind failure");
+            exit(EXIT_FAILURE);
+        }
+
+        if (listen(master_socket, 3) < 0)
+        {
+            perror("listen failure");
+            exit(EXIT_FAILURE);
+        }
+
+        addrlen = sizeof(address);
+
+        for (size_t i = 0; i < connection_n; i++)
+        {
+            if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
+                                     (socklen_t *)&addrlen)) < 0)
+            {
+                perror("accept failure");
+                exit(EXIT_FAILURE);
+            }
+            recv_threads[i] = new std::thread(recv_routine, new_socket, replies, b);
+        }
+
+        b->hit_main();
+        // std::cout << "=====================" << time(0) << "\n";
+        sleep(3);
+        b->release();
+        b->hit_main();
+        // std::cout << "=====================" << time(0) << "\n";
+        sleep(3);
+
+        std::map<int, std::string> id_map;
+        std::map<std::string, int> clt_num_map;
+        for (std::string reply : *replies)
+        {
+            std::vector<std::string> reply_segments = split(reply);
+            id_map[std::stoi(reply_segments[1])] = reply_segments[0];
+            clt_num_map[reply_segments[0]] = std::stoi(reply_segments[1]);
+        }
+        for (std::pair<int, int> port_entry : port_map)
+        {
+            std::cout << "Connected to " + std::to_string(port_entry.first) + " with unique-ID " + id_map[port_entry.first] + " on port " + std::to_string(port_entry.second) + "\n"
+                      << std::flush;
+        }
+        delete message;
+        message = new std::string();
+        *message = std::to_string(id) + ",";
+        for (std::string file : files)
+        {
+            *message += file + ",";
+        }
+        for (std::pair<int, std::string *> message_entry : message_map)
+        {
+            *message_entry.second = *message;
+        }
+        replies->clear();
+
+        b->release();
+        b->hit_main();
+        // std::cout << "=====================" << time(0) << "\n";
+        sleep(3);
+
+        delete message;
+        for (std::string reply : *replies)
+        {
+            std::vector<std::string> reply_segments = split(reply);
+            int peer_clt_num = clt_num_map[reply_segments[0]];
+
+            *message_map[peer_clt_num] = std::string(std::to_string(id) + ",");
+            for (size_t i = 1; i < reply_segments.size(); i++)
+                if (dir.find(reply_segments[i]) != dir.end())
+                    *message_map[peer_clt_num] += "y,";
+                else
+                    *message_map[peer_clt_num] += "n,";
+        }
+        replies->clear();
+
+        b->release();
+        b->hit_main();
+        // std::cout << "=====================" << time(0) << "\n";
+        sleep(3);
+
+        for (std::string reply : *replies)
+        {
+            std::vector<std::string> reply_segments = split(reply);
+            int peer_clt_num = clt_num_map[reply_segments[0]];
+            *message_map[peer_clt_num] = "";
+
+            for (size_t i = 1; i < reply_segments.size(); i++)
+                if (reply_segments[i] == "y")
+                    if (files_info.find(files[i - 1]) == files_info.end())
+                        files_info[files[i - 1]] = reply_segments[0];
+                    else if (std::stoi(files_info[files[i - 1]]) < std::stoi(reply_segments[0]))
+                        files_info[files[i - 1]] = reply_segments[0];
+        }
+
+        b->running = false;
+        b->release();
+
+        for (std::thread *t : send_threads)
+            t->join();
+        for (std::thread *t : recv_threads)
+            t->join();
     }
-
-    b->hit_main();
-    // std::cout << "==============================\n";
-    sleep(2);
-    b->release();
-    b->hit_main();
-    // std::cout << "==============================\n";
-    sleep(2);
-
-    std::map<int, std::string> id_map;
-    std::map<std::string, int> clt_num_map;
-    for (std::string reply : *replies)
-    {
-        std::vector<std::string> reply_segments = split(reply);
-        id_map[std::stoi(reply_segments[1])] = reply_segments[0];
-        clt_num_map[reply_segments[0]] = std::stoi(reply_segments[1]);
-    }
-    for (std::pair<int, int> port_entry : port_map)
-    {
-        std::cout << "Connected with " + std::to_string(port_entry.first) + " with unique-ID " + id_map[port_entry.first] + " on port " + std::to_string(port_entry.second) + "\n";
-    }
-    delete message;
-    message = new std::string();
-    *message = std::to_string(id) + ",";
-    for (std::string file : files)
-    {
-        *message += file + ",";
-    }
-    for (std::pair<int, std::string *> message_entry : message_map)
-    {
-        *message_entry.second = *message;
-    }
-    replies->clear();
-    std::map<std::string, std::string> files_info;
-
-    b->release();
-    b->hit_main();
-    // std::cout << "==============================\n";
-    sleep(2);
-
-    delete message;
-    for (std::string reply : *replies)
-    {
-        std::vector<std::string> reply_segments = split(reply);
-        int peer_clt_num = clt_num_map[reply_segments[0]];
-
-        *message_map[peer_clt_num] = std::string(std::to_string(id) + ",");
-        for (size_t i = 1; i < reply_segments.size(); i++)
-            if (dir.find(reply_segments[i]) != dir.end())
-                *message_map[peer_clt_num] += "y,";
-            else
-                *message_map[peer_clt_num] += "n,";
-    }
-    replies->clear();
-
-    b->release();
-    b->hit_main();
-    // std::cout << "==============================\n";
-    sleep(2);
-
-    for (std::string reply : *replies)
-    {
-        std::vector<std::string> reply_segments = split(reply);
-        int peer_clt_num = clt_num_map[reply_segments[0]];
-        *message_map[peer_clt_num] = "";
-
-        for (size_t i = 1; i < reply_segments.size(); i++)
-            if (reply_segments[i] == "y")
-                if (files_info.find(files[i - 1]) == files_info.end())
-                    files_info[files[i - 1]] = reply_segments[0];
-                else if (std::stoi(files_info[files[i - 1]]) < std::stoi(reply_segments[0]))
-                    files_info[files[i - 1]] = reply_segments[0];
-    }
-
-    b->running = false;
-    b->release();
-
-    for (std::thread *t : send_threads)
-        t->join();
-    for (std::thread *t : recv_threads)
-        t->join();
+    sort(files.begin(), files.end());
 
     for (std::string file : files)
     {
         if (files_info.find(file) != files_info.end())
-            std::cout << "Found " << file << " at " << files_info[file] << " with MD5 0 at depth 1\n";
+            std::cout << "Found " << file << " at " << files_info[file] << " with MD5 0 at depth 1" << std::endl;
         else
-            std::cout << "Found " << file << " at 0 with MD5 0 at depth 0\n";
+            std::cout << "Found " << file << " at 0 with MD5 0 at depth 0" << std::endl;
     }
     return 0;
 }

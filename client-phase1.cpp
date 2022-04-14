@@ -14,6 +14,7 @@
 #include <map>
 #include <set>
 #include <utility>
+#include <filesystem>
 #include <thread>
 
 #define TRUE 1
@@ -31,6 +32,18 @@ std::vector<std::string> split(std::string s, std::string delimiter = ",")
         s.erase(0, pos + delimiter.length());
     }
     return res;
+}
+
+std::string path_to_name(std::string path)
+{
+    size_t pos = 0;
+    std::string token;
+    while ((pos = path.find("/")) != std::string::npos)
+    {
+        token = path.substr(0, pos);
+        path.erase(0, pos + 1);
+    }
+    return path;
 }
 
 void recv_routine(int new_socket, std::vector<std::string> *replies)
@@ -83,8 +96,14 @@ int main(int argc, char *argv[])
         std::cout << "Usage : executable argument1-config-file argument2-directory-path\n";
         exit(1);
     }
-    std::string path_to_file = argv[2];
-    system(("ls " + path_to_file + " | sed \'s/ /\\n/g\'").c_str());
+    std::string path_to_files = argv[2];
+
+    std::map<std::string, std::string> dir;
+    for (const auto &entry : std::filesystem::directory_iterator(path_to_files))
+        if (path_to_name(entry.path()) != "Downloaded")
+            dir[path_to_name(entry.path())] = "";
+    for (std::pair<std::string, std::string> file : dir)
+        std::cout << file.first << std::endl;
 
     std::string config_file = argv[1];
     std::ifstream fin(config_file);
@@ -183,7 +202,8 @@ int main(int argc, char *argv[])
     }
     for (std::pair<int, int> port_entry : port_map)
     {
-        std::cout << "Connected with " + std::to_string(port_entry.first) + " with unique-ID " + id_map[port_entry.first] + " on port " + std::to_string(port_entry.second) + "\n";
+        std::cout << "Connected to " + std::to_string(port_entry.first) + " with unique-ID " + id_map[port_entry.first] + " on port " + std::to_string(port_entry.second) + "\n"
+                  << std::flush;
     }
     return 0;
 }
