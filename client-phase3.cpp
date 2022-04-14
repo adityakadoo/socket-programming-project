@@ -632,21 +632,8 @@ int main(int argc, char *argv[])
     {
         if (files_info.find(file) != files_info.end())
         {
-            // int file_descript;
-            // unsigned long file_size;
-            // char *file_buffer;
-
-            // file_descript = client_fd(file, path_to_files + "Downloaded/");
-
             std::string file_path = path_to_files + "Downloaded/" + file;
-            // std::filesystem::path p{file_path};
-            // file_size = std::filesystem::file_size(p);
-            // std::string hash;
             std::string hash = split_once(get_exec(("md5sum " + file_path + " | grep -o \"^[0-9a-f]*\"").c_str()), "\n")[0];
-            // file_buffer = (char *)mmap(0, file_size, PROT_READ, MAP_SHARED, file_descript, 0);
-            // MD5((unsigned char *)file_buffer, file_size, (unsigned char *)hash.c_str());
-            // munmap(file_buffer, file_size);
-
             std::cout << "Found " << file << " at " << files_info[file] << " with MD5 " << hash << " at depth 1\n";
         }
         else
