@@ -125,7 +125,7 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
             valread = recv(new_socket, buffer, 1024, 0);
             buffer[valread] = '\0';
             r = split(buffer, ";");
-            std::cout << valread << "," << buffer << "\n";
+            // std::cout << valread << "," << buffer << "\n";
             if (valread == 0)
             {
                 m = std::to_string(-1) + ";" + std::to_string(new_socket) + ";";
