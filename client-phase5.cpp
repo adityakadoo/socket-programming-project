@@ -16,9 +16,9 @@
 #include <utility>
 #include <thread>
 #include <filesystem>
-#include <csignal>
 #include <streambuf>
 #include <sys/sendfile.h>
+#include <fcntl.h>
 
 #define TRUE 1
 #define FALSE 0
@@ -91,10 +91,7 @@ std::string get_exec(const char *cmd)
 }
 
 int client_fd(std::string dir, std::string path_to_send)
-{ // probably need to make the client_routine return the socket to use it here
-
-    // std::vector<const char*> dir_char;
-
+{
     std::string file_path = path_to_send + dir;
     FILE *fp;
     fp = fopen(file_path.c_str(), "r");
@@ -105,8 +102,6 @@ int client_fd(std::string dir, std::string path_to_send)
     }
 
     int fileds = fileno(fp);
-
-    // send_file(fp,sock);
 
     return fileds;
 }
@@ -122,10 +117,12 @@ class barrier
 
 public:
     bool running;
+    int conv;
     barrier(int max)
     {
         reached_count = 0;
         max_count = max;
+        conv = 0;
         count_protector = new std::counting_semaphore<1>(1);
         print_protector = new std::counting_semaphore<1>(1);
         barrier_semaphore = new std::counting_semaphore<MAX_PEERS>(0);
@@ -143,13 +140,14 @@ public:
     {
         count_protector->acquire();
         reached_count++;
-        count_protector->release();
 
         if (reached_count == max_count)
         {
             reached_count = 0;
+            conv++;
             main_barrier->release(1);
         }
+        count_protector->release(1);
 
         barrier_semaphore->acquire();
     }
@@ -167,14 +165,13 @@ public:
     }
     void release_print()
     {
-        print_protector->release();
+        print_protector->release(1);
     }
 };
 
 void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
 {
     int valread;
-    int conv = 0;
     std::string m;
     std::vector<std::string> r;
 
@@ -185,76 +182,75 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
     {
         while (true)
         {
-            valread = recv(new_socket, buffer, 1024, 0);
+            valread = -1;
+            while (valread < 0)
+            {
+                valread = recv(new_socket, buffer, 1024, 0);
+                sleep(1);
+            }
             buffer[valread] = '\0';
             r = split(buffer, ";");
-            // b->get_print();
-            // std::cout << valread << "," << buffer << "\n";
-            // b->release_print();
-            if (valread == 0)
+
+            m = std::to_string(b->conv) + ";" + std::to_string(new_socket) + ";";
+            while (send(new_socket, m.c_str(), m.length(), 0) != m.length())
             {
-                m = std::to_string(-1) + ";" + std::to_string(new_socket) + ";";
-                send(new_socket, m.c_str(), m.length(), 0);
+                sleep(1);
+            }
+            if (std::stoi(r[0]) == b->conv)
+            {
+                b->get_print();
+                replies->push_back(r[1]);
+                b->release_print();
                 break;
             }
-
-            std::string src = split(r[1])[0];
-
-            m = std::to_string(conv) + ";" + std::to_string(new_socket) + ";";
-            send(new_socket, m.c_str(), m.length(), 0);
-
-            if (std::stoi(r[0]) == conv)
+            else if (std::stoi(r[0]) > b->conv)
             {
-                replies->push_back(r[1]);
-                // b->get_print();
-                // std::cout << buffer << " -> kept\n"
-                //           << std::flush;
-                // b->release_print();
                 break;
             }
             else
             {
-                // b->get_print();
-                // std::cout << buffer << " -> discarded\n"
-                //           << std::flush;
-                // b->release_print();
-                sleep(2);
+                sleep(1);
             }
         }
         b->hit();
-        conv++;
     }
 
-    sleep(1);
-    valread = recv(new_socket, buffer, 1024, 0);
+    valread = -1;
+    while (valread < 0)
+    {
+        sleep(1);
+        valread = recv(new_socket, buffer, 1024, 0);
+    }
     buffer[valread] = '\0';
     int nfiles = std::stoi(std::string(buffer));
-    // b->get_print();
-    // std::cout << "nfiles : " << nfiles << "\n"
-    //           << std::flush;
-    // b->release_print();
 
     m = "ACK";
-    send(new_socket, m.c_str(), m.length(), 0);
+    while (send(new_socket, m.c_str(), m.length(), 0) != m.length())
+    {
+        sleep(1);
+    }
     sleep(1);
 
     for (size_t i = 0; i < nfiles; i++)
     {
-        // download(new_socket);
         sleep(1);
-        valread = recv(new_socket, buffer, 1024, 0);
+        valread = -1;
+        while (valread < 0)
+        {
+            sleep(1);
+            valread = recv(new_socket, buffer, 1024, 0);
+        }
         buffer[valread] = '\0';
         r = split(buffer);
-        // b->get_print();
-        // std::cout << valread << "," << r[0] << "," << r[1] << "," << r.size() << "\n"
-        //           << std::flush;
-        // b->release_print();
         int file_size = std::stoi(r[0]);
 
         std::string file_name = r[1];
 
         m = "ACK";
-        send(new_socket, m.c_str(), m.length(), 0);
+        while (send(new_socket, m.c_str(), m.length(), 0) != m.length())
+        {
+            sleep(1);
+        }
 
         int rec_bytes = 0;
 
@@ -263,28 +259,25 @@ void recv_routine(int new_socket, std::vector<std::string> *replies, barrier *b)
 
         while (rec_bytes < file_size)
         {
-            valread = recv(new_socket, buffer, 1024, 0);
-            // std::cout << "reading" << valread << "\n";
+            valread = -1;
+            while (valread < 0)
+            {
+                valread = recv(new_socket, buffer, 1024, 0);
+            }
             buffer[valread] = '\0';
 
             rec_bytes += valread;
             down_file.write(buffer, valread);
-
-            // b->get_print();
-            // std::cout << rec_bytes << "/" << file_size << "          \n"
-            //           << std::flush;
-            // b->release_print();
         }
 
         down_file.close();
 
         m = "ACK";
-        send(new_socket, m.c_str(), m.length(), 0);
+        while (send(new_socket, m.c_str(), m.length(), 0) != m.length())
+        {
+            sleep(1);
+        }
     }
-    // close(new_socket);
-    sleep(5);
-    // std::cout << "recv-bye\n"
-    //           << std::flush;
 }
 
 void send_routine(int port, std::string *message, barrier *b)
@@ -293,18 +286,16 @@ void send_routine(int port, std::string *message, barrier *b)
     struct sockaddr_in peer_addr;
     char buffer[1024] = {0};
 
-    int conv = 0;
     std::string m;
     std::vector<std::string> r;
 
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
     {
-        // b->get_print();
         printf("socket failure");
-        // b->release_print();
         exit(1);
     }
 
+    fcntl(sock, F_SETFL, O_NONBLOCK);
     peer_addr.sin_family = AF_INET;
     peer_addr.sin_port = htons(port);
 
@@ -315,9 +306,6 @@ void send_routine(int port, std::string *message, barrier *b)
     }
     while (connect(sock, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0)
     {
-        // b->get_print();
-        // std::cout << "connecting to " << port << "\r" << std::flush;
-        // b->release_print();
         sleep(1);
     }
 
@@ -326,82 +314,88 @@ void send_routine(int port, std::string *message, barrier *b)
     {
         while (true)
         {
-            m = std::to_string(conv) + ";" + *message + ";";
-
-            if (send(sock, m.c_str(), m.length(), 0) != m.length())
+            m = std::to_string(b->conv) + ";" + *message + ";";
+            while (send(sock, m.c_str(), m.length(), 0) != m.length())
             {
-                perror("send failure");
+                sleep(1);
             }
-            valread = recv(sock, buffer, 1024, 0);
+
+            valread = -1;
+            while (valread < 0)
+            {
+                sleep(1);
+                valread = recv(sock, buffer, 1024, 0);
+            }
             buffer[valread] = '\0';
-            // std::cout << buffer << "\n";
             r = split(buffer, ";");
 
-            if (std::stoi(r[0]) == conv)
+            if (std::stoi(r[0]) == b->conv)
             {
-                // b->get_print();
-                // std::cout << conv << " accpected at " << r[1] << "\n"
-                //           << std::flush;
-                // b->release_print();
                 break;
             }
-            // b->get_print();
-            // std::cout << conv << " rejected at " << r[1] << "\n"
-            //           << std::flush;
-            // b->release_print();
-            // sleep(5);
         }
         b->hit();
-        conv++;
     }
 
     std::vector<std::string> file_desc = split(*message);
     int nfiles = file_desc.size() / 3;
     m = std::to_string(nfiles);
-    send(sock, m.c_str(), m.length(), 0);
-    sleep(1);
-    valread = recv(sock, buffer, 1024, 0);
-    buffer[valread] = '\0';
-
-    // b->get_print();
-    // std::cout << "\n"
-    //           << *message << " + " << file_desc.size() << "\n"
-    //           << std::flush;
-    // b->release_print();
-    for (size_t i = 0; i < file_desc.size(); i = i + 3)
+    while (send(sock, m.c_str(), m.length(), 0) != m.length())
     {
-        // upload(sock, std::stoi(file_desc[i]), std::stoi(file_desc[i + 1]), file_desc[i + 2]);
-        m = file_desc[i + 1] + "," + file_desc[i + 2] + ",";
-        send(sock, m.c_str(), m.length(), 0);
+        sleep(1);
+    }
+    sleep(1);
+
+    valread = -1;
+    while (valread < 0)
+    {
         sleep(1);
         valread = recv(sock, buffer, 1024, 0);
+    }
+    buffer[valread] = '\0';
+
+    for (size_t i = 0; i < file_desc.size(); i = i + 3)
+    {
+        m = file_desc[i + 1] + "," + file_desc[i + 2] + ",";
+        while (send(sock, m.c_str(), m.length(), 0) != m.length())
+        {
+            sleep(1);
+        }
+        valread = -1;
+        while (valread < 0)
+        {
+            sleep(1);
+            valread = recv(sock, buffer, 1024, 0);
+        }
         buffer[valread] = '\0';
-        // b->get_print();
-        // std::cout << valread << "," << buffer << "\n"
-        //           << std::flush;
-        // b->release_print();
 
         int file_size = std::stoi(file_desc[i + 1]);
         int sen_bytes = 0;
+        int sent;
         while (sen_bytes < file_size)
         {
-            int sent = sendfile(sock, std::stoi(file_desc[i]), (off_t *)&sen_bytes, file_size);
+            sent = -1;
+            while (sent < 0)
+            {
+                off_t *of = new off_t(sen_bytes);
+                sent = sendfile(sock, std::stoi(file_desc[i]), of, std::stoi(file_desc[i + 1]));
+                sleep(1);
+            }
             sen_bytes += sent;
         }
         sleep(1);
-        valread = recv(sock, buffer, 1024, 0);
+        valread = -1;
+        while (valread < 0)
+        {
+            sleep(1);
+            valread = recv(sock, buffer, 1024, 0);
+        }
         buffer[valread] = '\0';
     }
-
-    // close(sock);
-    sleep(5);
-    // std::cout << "send-bye\n"
-    //           << std::flush;
 }
 
 int main(int argc, char *argv[])
 {
-    // reading config file and given folder
 
     if (argc < 3)
     {
@@ -441,23 +435,20 @@ int main(int argc, char *argv[])
     for (size_t i = 0; i < file_n; i++)
         fin >> files[i];
 
-    // setting up sockets
-
     std::map<std::string, std::tuple<std::string, int>> files_info;
     if (connection_n != 0)
     {
         barrier *b = new barrier(connection_n * 2);
 
         std::map<int, std::string *> message_map;
-        std::string *message = new std::string();
-        *message = std::to_string(id) + "," + std::to_string(clt_num) + ",";
+        std::string message = std::to_string(id) + "," + std::to_string(clt_num) + ",";
 
         std::vector<std::string> *replies = new std::vector<std::string>();
 
         std::vector<std::thread *> send_threads(connection_n);
         for (size_t i = 0; i < connection_n; i++)
         {
-            message_map[neighbours[i]] = new std::string(*message);
+            message_map[neighbours[i]] = new std::string(message);
             send_threads[i] = new std::thread(send_routine, port_map[neighbours[i]], message_map[neighbours[i]], b);
         }
 
@@ -473,6 +464,7 @@ int main(int argc, char *argv[])
             exit(EXIT_FAILURE);
         }
 
+        fcntl(master_socket, F_SETFL, O_NONBLOCK);
         if (setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&OPT, sizeof(OPT)) < 0)
         {
             perror("setsockopt failure");
@@ -499,23 +491,18 @@ int main(int argc, char *argv[])
 
         for (size_t i = 0; i < connection_n; i++)
         {
-            if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
-                                     (socklen_t *)&addrlen)) < 0)
+            while ((new_socket = accept(master_socket, (struct sockaddr *)&address,
+                                        (socklen_t *)&addrlen)) < 0)
             {
-                perror("accept failure");
-                exit(EXIT_FAILURE);
+                sleep(1);
             }
+            fcntl(new_socket, F_SETFL, O_NONBLOCK);
             recv_threads[i] = new std::thread(recv_routine, new_socket, replies, b);
         }
 
         b->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
         b->release();
-        // they exchange ids now
         b->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
 
         std::map<int, std::string> id_map;
         std::map<std::string, int> clt_num_map;
@@ -530,27 +517,21 @@ int main(int argc, char *argv[])
             std::cout << "Connected to " + std::to_string(port_entry.first) + " with unique-ID " + id_map[port_entry.first] + " on port " + std::to_string(port_entry.second) + "\n"
                       << std::flush;
         }
-        delete message;
-        message = new std::string();
-        *message = std::to_string(id) + ",";
+        message = std::to_string(id) + ",";
         for (std::string file : files)
         {
-            *message += file + ",";
+            message += file + ",";
         }
         for (std::pair<int, std::string *> message_entry : message_map)
         {
-            *message_entry.second = *message;
+            *message_entry.second = message;
         }
         replies->clear();
-        std::map<std::string, std::tuple<std::string, std::string>> peer_files_info;
+        std::map<std::tuple<std::string, std::string>, std::string> peer_files_info;
 
         b->release();
-        // asking for files
         b->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
 
-        delete message;
         for (std::string reply : *replies)
         {
             std::vector<std::string> reply_segments = split(reply);
@@ -563,17 +544,13 @@ int main(int argc, char *argv[])
                 else
                 {
                     *message_map[peer_clt_num] += "n,";
-                    // storing files the neighbour still needs
-                    peer_files_info[reply_segments[i]] = std::make_tuple(reply_segments[0], "");
+                    peer_files_info[std::make_tuple(reply_segments[i], reply_segments[0])] = "";
                 }
         }
         replies->clear();
 
         b->release();
-        // reply from immediate neighbour
         b->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
 
         for (std::string reply : *replies)
         {
@@ -585,30 +562,28 @@ int main(int argc, char *argv[])
                 if (reply_segments[i] == "y")
                     if (files_info.find(files[i - 1]) == files_info.end())
                         files_info[files[i - 1]] = std::make_tuple(reply_segments[0], 1);
-                    else if (std::stoi(std::get<0>(files_info[files[i - 1]])) < std::stoi(reply_segments[0]))
+                    else if (std::stoi(std::get<0>(files_info[files[i - 1]])) > std::stoi(reply_segments[0]))
                         files_info[files[i - 1]] = std::make_tuple(reply_segments[0], 1);
         }
-        message = new std::string();
-        *message = std::to_string(id) + ",";
-        for (std::pair<std::string, std::tuple<std::string, std::string>> file : peer_files_info)
+        message = std::to_string(id) + ",";
+        std::set<std::string> search_set;
+        for (std::pair<std::tuple<std::string, std::string>, std::string> file : peer_files_info)
         {
-            // std::cout << file.first << "\n"
-            //           << std::flush;
-            *message += file.first + ",";
+            search_set.insert(std::get<0>(file.first));
+        }
+        for (std::string file : search_set)
+        {
+            message += file + ",";
         }
         for (std::pair<int, std::string *> message_entry : message_map)
         {
-            *message_entry.second = *message;
+            *message_entry.second = message;
         }
         replies->clear();
 
         b->release();
-        // asking other neighbours for files that I dont have
         b->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
 
-        delete message;
         for (std::string reply : *replies)
         {
             std::vector<std::string> reply_segments = split(reply);
@@ -617,19 +592,16 @@ int main(int argc, char *argv[])
             *message_map[peer_clt_num] = std::string(std::to_string(id) + ",");
             for (size_t i = 1; i < reply_segments.size(); i++)
                 if (dir.find(reply_segments[i]) != dir.end())
-                    *message_map[peer_clt_num] += "y,";
+                    *message_map[peer_clt_num] += reply_segments[i] + ",y,";
                 else
                 {
-                    *message_map[peer_clt_num] += "n,";
+                    *message_map[peer_clt_num] += reply_segments[i] + ",n,";
                 }
         }
         replies->clear();
 
         b->release();
-        // checking for new files asked
         b->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
 
         for (std::string reply : *replies)
         {
@@ -637,30 +609,34 @@ int main(int argc, char *argv[])
             int peer_clt_num = clt_num_map[reply_segments[0]];
             *message_map[peer_clt_num] = std::string(std::to_string(id) + ",");
 
-            std::map<std::string, std::tuple<std::string, std::string>>::iterator it = peer_files_info.begin();
-            for (size_t i = 1; i < reply_segments.size(); i++)
+            for (std::map<std::tuple<std::string, std::string>, std::string>::iterator file = peer_files_info.begin(); file != peer_files_info.end(); file++)
             {
-                if (reply_segments[i] == "y")
-                    if (std::get<1>(peer_files_info[it->first]) == "")
-                        std::get<1>(peer_files_info[it->first]) = reply_segments[0];
-                    else if (std::stoi(std::get<1>(peer_files_info[it->first])) < std::stoi(reply_segments[0]))
-                        std::get<1>(peer_files_info[it->first]) = reply_segments[0];
-                it++;
+                for (size_t i = 1; i < reply_segments.size(); i += 2)
+                {
+                    if (reply_segments[i + 1] == "y" && std::get<0>(file->first) == reply_segments[i])
+                    {
+                        if (file->second == "")
+                        {
+                            file->second = reply_segments[0];
+                        }
+                        else if (std::stoi(file->second) > std::stoi(reply_segments[0]))
+                        {
+                            file->second = reply_segments[0];
+                        }
+                    }
+                }
             }
         }
-        for (std::pair<std::string, std::tuple<std::string, std::string>> file : peer_files_info)
+        for (std::pair<std::tuple<std::string, std::string>, std::string> file : peer_files_info)
         {
-            int peer_clt_num = clt_num_map[std::get<0>(file.second)];
-            if (std::get<1>(file.second) != "")
-                *message_map[peer_clt_num] += file.first + "," + std::get<1>(file.second) + "," + std::to_string(port_map[clt_num_map[std::get<1>(file.second)]]) + ",";
+            int peer_clt_num = clt_num_map[std::get<1>(file.first)];
+            if (file.second != "")
+                *message_map[peer_clt_num] += std::get<0>(file.first) + "," + file.second + "," + std::to_string(port_map[clt_num_map[file.second]]) + ",";
         }
         replies->clear();
 
         b->release();
-        // reporting search results to original neighbour
         b->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
 
         std::map<std::string, std::tuple<std::string, int>> download_map;
         for (std::string reply : *replies)
@@ -672,6 +648,11 @@ int main(int argc, char *argv[])
             for (size_t i = 1; i < reply_segments.size(); i += 3)
             {
                 if (files_info.find(reply_segments[i]) == files_info.end())
+                {
+                    files_info[reply_segments[i]] = std::make_tuple(reply_segments[i + 1], 2);
+                    download_map[reply_segments[i]] = std::make_tuple(reply_segments[0], std::stoi(reply_segments[i + 2]));
+                }
+                else if (std::stoi(std::get<0>(files_info[reply_segments[i]])) > std::stoi(reply_segments[i + 1]))
                 {
                     files_info[reply_segments[i]] = std::make_tuple(reply_segments[i + 1], 2);
                     download_map[reply_segments[i]] = std::make_tuple(reply_segments[0], std::stoi(reply_segments[i + 2]));
@@ -690,8 +671,6 @@ int main(int argc, char *argv[])
 
         b->release();
         b->hit_main();
-        // std::cout << "==============================\n";
-        sleep(3);
 
         for (std::pair<int, std::string *> m : message_map)
         {
@@ -711,10 +690,8 @@ int main(int argc, char *argv[])
 
         b->release();
         b->hit_main();
-        // std::cout << "==============================\n";
-        sleep(3);
 
-        std::map<std::string, std::tuple<std::string, int>> upload_map;
+        std::map<std::tuple<std::string, std::string>, int> upload_map;
         for (std::string reply : *replies)
         {
             std::vector<std::string> reply_segments = split(reply);
@@ -723,7 +700,7 @@ int main(int argc, char *argv[])
 
             for (size_t i = 1; i < reply_segments.size(); i += 3)
             {
-                upload_map[reply_segments[i]] = std::make_tuple(reply_segments[i + 1], std::stoi(reply_segments[i + 2]));
+                upload_map[std::make_tuple(reply_segments[i], reply_segments[i + 1])] = std::stoi(reply_segments[i + 2]);
             }
         }
         replies->clear();
@@ -738,8 +715,6 @@ int main(int argc, char *argv[])
 
         b->release();
         b->hit_main();
-        // std::cout << "==============================\n";
-        sleep(3);
 
         std::filesystem::path d{path_to_files + "Downloaded/"};
         std::filesystem::create_directory(d);
@@ -753,8 +728,6 @@ int main(int argc, char *argv[])
             {
                 std::string file_path = path_to_files + reply_segments[i];
                 std::filesystem::path p{file_path};
-                // std::cout << client_fd(reply_segments[i], path_to_files) << "\n"
-                //           << std::flush;
                 *message_map[peer_clt_num] += std::to_string(client_fd(reply_segments[i], path_to_files)) + "," + std::to_string((int)std::filesystem::file_size(p)) + "," + reply_segments[i] + ",";
             }
         }
@@ -780,26 +753,18 @@ int main(int argc, char *argv[])
         std::map<std::string, std::string *> file_list;
         std::map<std::string, int> port_map2;
 
-        for (std::pair<std::string, std::tuple<std::string, int>> file : upload_map)
+        for (std::pair<std::tuple<std::string, std::string>, int> file : upload_map)
         {
-            std::string file_path = path_to_files + file.first;
+            std::string file_path = path_to_files + std::get<0>(file.first);
             std::filesystem::path p{file_path};
-            if (file_list.find(std::get<0>(file.second)) == file_list.end())
-                file_list[std::get<0>(file.second)] = new std::string(std::to_string(client_fd(file.first, path_to_files)) + "," + std::to_string((int)std::filesystem::file_size(p)) + "," + file.first + ",");
+            if (file_list.find(std::get<1>(file.first)) == file_list.end())
+                file_list[std::get<1>(file.first)] = new std::string(std::to_string(client_fd(std::get<0>(file.first), path_to_files)) + "," + std::to_string((int)std::filesystem::file_size(p)) + "," + std::get<0>(file.first) + ",");
             else
-                *file_list[std::get<0>(file.second)] += std::to_string(client_fd(file.first, path_to_files)) + "," + std::to_string((int)std::filesystem::file_size(p)) + "," + file.first + ",";
+                *file_list[std::get<1>(file.first)] += std::to_string(client_fd(std::get<0>(file.first), path_to_files)) + "," + std::to_string((int)std::filesystem::file_size(p)) + "," + std::get<0>(file.first) + ",";
 
-            if (port_map2.find(std::get<0>(file.second)) == port_map2.end())
-                port_map2[std::get<0>(file.second)] = std::get<1>(file.second);
+            if (port_map2.find(std::get<1>(file.first)) == port_map2.end())
+                port_map2[std::get<1>(file.first)] = file.second;
         }
-
-        // for (std::pair<std::string, std::tuple<std::string, int>> file : upload_map)
-        //     std::cout << "send " << file.first << " to " << std::get<0>(file.second) << "\n"
-        //               << std::flush;
-
-        // for (std::pair<std::string, std::tuple<std::string, int>> file : download_map)
-        //     std::cout << "recv " << file.first << " on " << std::get<0>(file.second) << "\n"
-        //               << std::flush;
 
         std::set<std::string> download_peers;
         for (std::pair<std::string, std::tuple<std::string, int>> file : download_map)
@@ -811,31 +776,24 @@ int main(int argc, char *argv[])
         int recvs = download_peers.size();
 
         barrier *b1 = new barrier(sends + recvs);
-        // send_threads.resize(sends);
         recv_threads.resize(recvs);
         for (std::pair<std::string, int> peer : port_map2)
         {
             send_threads.push_back(new std::thread(send_routine, peer.second, file_list[peer.first], b1));
         }
-        // std::cout << "sending to " << sends << "\n"
-        //           << std::flush;
-        // std::cout << "recving on " << recvs << "\n"
-        //           << std::flush;
         for (size_t i = 0; i < recvs; i++)
         {
-            if ((new_socket = accept(master_socket, (struct sockaddr *)&address,
-                                     (socklen_t *)&addrlen)) < 0)
+            while ((new_socket = accept(master_socket, (struct sockaddr *)&address,
+                                        (socklen_t *)&addrlen)) < 0)
             {
-                perror("accept failure");
-                exit(EXIT_FAILURE);
+                sleep(1);
             }
+            fcntl(new_socket, F_SETFL, O_NONBLOCK);
             recv_threads[i] = (new std::thread(recv_routine, new_socket, replies, b1));
         }
 
         if (sends + recvs != 0)
             b1->hit_main();
-        // std::cout << "===================" << time(0) << "\n";
-        sleep(3);
         b1->running = false;
         b1->release();
 
@@ -857,11 +815,8 @@ int main(int argc, char *argv[])
     {
         if (files_info.find(file) != files_info.end())
         {
-            // if (std::get<1>(files_info[file]) == 1)
-            // {
             std::string file_path = path_to_files + "Downloaded/" + file;
             std::string hash = split_once(get_exec(("md5sum " + file_path + " | grep -o \"^[0-9a-f]*\"").c_str()), "\n")[0];
-            // }
             std::cout << "Found " << file << " at " << std::get<0>(files_info[file]) << " with MD5 " << hash << " at depth " << std::get<1>(files_info[file]) << std::endl;
         }
         else
